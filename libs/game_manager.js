@@ -53,11 +53,7 @@ module.exports.listen = function(app) {
 
 module.exports.tick = tick;
 
-var FPS = 30;
-var SEC_PER_FRAME = 1000 / FPS;
 var serverDelay = 120; 
-var i = 0;
-
 function tick() {
 	var newTime = new Date().getTime();
 	// Process messages, delayed by 120ms (4 frames)
@@ -97,7 +93,7 @@ function processMessages(t) {
 		var player = getWorldPlayerById(msg.id);
 		if (!player) continue;
 		player.lastMessage = Math.max(msg.seq, player.lastMessage);
-		console.log(`\tPROCESSING MESSAGE at ${msg.t - theWorld.startTime} for time interval ${t - theWorld.startTime}  ---- ${msg.type}`);
+		// console.log(`\tPROCESSING MESSAGE at ${msg.t - theWorld.startTime} for time interval ${t - theWorld.startTime}  ---- ${msg.type}`);
 		switch (msg.type) {
 			case KEYSTROKE:
 				// console.log(`HANDLING KEY: ${msg.key} ${msg.down} FOR ${msg.id} at ${msg.t} vs ${t}`);
@@ -105,7 +101,7 @@ function processMessages(t) {
 				break;
 			case BEARING:
 				// console.log(`HANDLING BEARING: ${msg.bearing} FOR ${msg.id} at ${msg.t} vs ${t}`);
-				player.bearingGoal = msg.bearing;
+				if (player.isCaptian) player.bearingGoal = msg.bearing;
 				break;
 		}
 		index++;
@@ -113,18 +109,47 @@ function processMessages(t) {
 	messages.splice(0, index);
 }
 
+var shiftDown = [];
 function handleKeyMessage(player, key, down) {
 	switch (key) {
 		case 87:	// w
 		case 38:	// up arrow
-			player.acceleratingForward = down;
+			if (player.isCaptian) player.acceleratingForward = down;
 			break;
 		case 83:	// s
 		case 40:	// down arrow
-			player.acceleratingBackward = down;
+			if (player.isCaptian) player.acceleratingBackward = down;
 			break;
+		case 81:	// w
+			if (down) {
+				shiftDown[player.id] = true;
+			} else {
+				if (shiftDown[player.id]) {
+					console.log(`ROTATE PORT ${player.ports[0]} ${player.ports[1]} ${player.ports[2]} ${player.ports[3]}`);
+					rotateOpenPort(player);
+					console.log(`ROTATE PORT ${player.ports[0]} ${player.ports[1]} ${player.ports[2]} ${player.ports[3]}`);
+				}
+				shiftDown[player.id] = false;
+			}
 		default:
+			console.log(`Key press: ${key} ${down}`);
 			break;
+	}
+}
+
+function rotateOpenPort(player) {
+	for (var i = 0; i < 4; i++) {
+		if (player.ports[i] === PORT.ACTIVE || player.ports[i] === PORT.OPEN) {
+			player.ports[i] = PORT.CLOSED;
+			for (var j = 0; j < 3; j++) {
+				if (player.ports[(i + j + 1) % 4] === PORT.CLOSED) {
+					player.ports[(i + j + 1) % 4] = PORT.OPEN;
+					return;
+				}
+			}
+			player.ports[i] = PORT.OPEN;
+			return;
+		}
 	}
 }
 
@@ -138,6 +163,17 @@ function round(val, digits) {
 	return Math.floor(Math.abs(val) * Math.pow(10, digits)) / Math.pow(10, digits) * Math.sign(val);
 }
 
+function getAngle(x, y) {
+	console.log(`GET ANGLE ${x} ${y}`);
+	var res = Math.atan2(-y, -x) / Math.PI * 180 + 180;
+	return res;
+}
+
+function bearingDiff(b1, b2) {
+	var diff = (b1 - b2 + 360) % 360;
+	return diff > 180 ? diff - 360 : diff;
+}
+
 /////// Game logic \\\\\\\
 function updatePosition(obj, frames) {
 	var rad = obj.bearing * Math.PI / 180;
@@ -149,10 +185,10 @@ function updatePosition(obj, frames) {
 	obj.y = round(Math.min(theWorld.height - offY, Math.max(offY, obj.y + frames * obj.speed * sin)), 2);
 }
 
-var FRICTION = 0.04;
+var FRICTION = 0.02;
 function updateShip(ship, frames) {
 	// if (logFull) console.log("%s(%j)", arguments.callee.name, Array.prototype.slice.call(arguments).sort());
-	console.log(`UPDATING SHIP ${(theWorld.t- theWorld.startTime)} ${ship.lastMessage}  ${ship.x} ${ship.y} ${ship.speed} ${ship.acceleratingForward} ${ship.acceleratingBackward} ${ship.bearing}`);
+	// console.log(`UPDATING SHIP ${(theWorld.t- theWorld.startTime)} ${ship.lastMessage}  ${ship.x} ${ship.y} ${ship.speed} ${ship.acceleratingForward} ${ship.acceleratingBackward} ${ship.bearing}`);
 	// Update speed, acceleration, and position
 	ship.speed *= (1 - FRICTION * frames);
 	if (ship.acceleratingForward) {
@@ -173,6 +209,11 @@ function updatePlayers(frames) {
 	for (var player of theWorld.players) {
 		updateShip(player, frames);
 	}
+	updatePorts();
+}
+
+var CONNECT_RADIUS = 100;
+function updatePorts() {
 }
 
 function updateBullet(bullet, frames) {
@@ -206,10 +247,18 @@ function handleNewConnection(socket) {
 	socket.emit("enter game", theWorld, newPlayer);
 }
 
+const PORT = {
+	CLOSED: "CLOSED",
+	OPEN: "OPEN",
+	ACTIVE: "ACTIVE",
+	ATTACHED: "ATTACHED",	
+};
+
 function makeNewPlayer(id) {
 	return {
 		id: id,
 		lastMessage: -1,
+		// Position
 		x: 200,
 		y: 200,
 		// Size
@@ -221,12 +270,16 @@ function makeNewPlayer(id) {
 		maxReverseSpeed: -4,
 		acceleratingForward: false,
 		acceleratingBackward: false,
-		forwardAcceleration: 1,
+		forwardAcceleration: 0.5,
 		reverseAcceleration: 0.2,
 		// Angle, and max angle turn per tick, in degrees.
 		bearingGoal: 0,
 		bearing: 0,
 		maxTurn: 2,
+		// Linking
+		isCaptian: true,
+		ports: [PORT.CLOSED, PORT.CLOSED, PORT.OPEN, PORT.CLOSED],
+		neighbors: [],
 	}
 }
 

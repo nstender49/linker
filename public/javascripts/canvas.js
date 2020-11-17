@@ -72,7 +72,7 @@ function processMessages(t) {
 		if (msg.t >= t) {
 			break;
 		}
-		console.log(`\tPROCESSING MESSAGE at ${msg.t - theWorld.startTime} for time interval ${t - theWorld.startTime}`);
+		// console.log(`\tPROCESSING MESSAGE at ${msg.t - theWorld.startTime} for time interval ${t - theWorld.startTime}`);
 		switch (msg.type) {
 			case KEYSTROKE:
 				// console.log(`HANDLING KEY: ${msg.key} ${msg.down} FOR ${msg.id} at ${msg.t} vs ${t}`);
@@ -80,7 +80,7 @@ function processMessages(t) {
 				break;
 			case BEARING:
 				// console.log(`HANDLING BEARING: ${msg.bearing} FOR ${msg.id} at ${msg.t} vs ${t}`);
-				thePlayer.bearingGoal = msg.bearing;
+				if (thePlayer.isCaptain) thePlayer.bearingGoal = msg.bearing;
 				break;
 		}
 	}
@@ -88,20 +88,22 @@ function processMessages(t) {
 }
 
 var firing = false;
+var shiftDown = false;
 function handleKeyMessage(player, key, down) {
 	switch (key) {
 		case 87:	// w
 		case 38:	// up arrow
-			player.acceleratingForward = down;
+			if (player.isCaptain) player.acceleratingForward = down;
 			break;
 		case 83:	// s
 		case 40:	// down arrow
-			player.acceleratingBackward = down;
+			if (player.isCaptain) player.acceleratingBackward = down;
 			break;
 		case 32:	// spacebar
 			firing = down;
 			break;
 		default:
+			// console.log(`Key press: ${key} ${down}`);
 			break;
 	}
 }
@@ -133,6 +135,7 @@ function handleResize() {
 
 ////// Utils \\\\\\\\\
 function getAngle(x, y) {
+	console.log(`GET ANGLE ${x} ${y}`);
 	var res = Math.atan2(-y, -x) / Math.PI * 180 + 180;
 	return res;
 }
@@ -143,6 +146,11 @@ function mod(n, m) {
 
 function round(val, digits) {
 	return Math.floor(Math.abs(val) * Math.pow(10, digits)) / Math.pow(10, digits) * Math.sign(val);
+}
+
+function bearingDiff(b1, b2) {
+	var diff = (b1 - b2 + 360) % 360;
+	return diff > 180 ? diff - 360 : diff;
 }
 
 ///// Game logic \\\\\\
@@ -159,7 +167,7 @@ function updatePosition(obj, frames) {
 
 var FRICTION = 0.04;
 function updateShip(ship, frames) {
-	console.log(`UPDATING SHIP ${tickTime - theWorld.startTime} ${ship.x} ${ship.y} ${ship.speed} ${ship.acceleratingForward} ${ship.acceleratingBackward} ${ship.bearing}`);
+	// console.log(`UPDATING SHIP ${tickTime - theWorld.startTime} ${ship.x} ${ship.y} ${ship.speed} ${ship.acceleratingForward} ${ship.acceleratingBackward} ${ship.bearing}`);
 	// Update speed, acceleration, and position
 	ship.speed *= (1 - FRICTION * frames);
 	if (ship.acceleratingForward) {
@@ -171,8 +179,7 @@ function updateShip(ship, frames) {
 	ship.speed = Math.min(ship.maxForwardSpeed, Math.max(ship.maxReverseSpeed, round(ship.speed, 2)));
 	updatePosition(ship, frames);
 	// Update bearing
-	var diff = (ship.bearingGoal - ship.bearing + 360) % 360;
-	diff = diff > 180 ? diff - 360 : diff;
+	var diff = bearingDiff(ship.bearingGoal, ship.bearing);
 	ship.bearing = round(mod(ship.bearing + Math.min(frames * ship.maxTurn, Math.abs(diff)) * Math.sign(diff), 360), 2);
 }
 
@@ -181,11 +188,116 @@ function updatePlayers(frames) {
 		if (playerId === player.id) {
 			thePlayer = player;
 			// console.log("FOUND PLAYER WHILE UPDATING PLAYERS: " + thePlayer.id + " " + thePlayer.lastMessage);
-			continue;
+			if (thePlayer.isCaptain) continue;
 		}
 		updateShip(player, frames);
 	}
+	updatePorts();
 }
+
+var CONNECT_RADIUS = 100;
+function updatePorts() {
+	// Check that neighbors are still neighbors.
+	for (var p1 of theWorld.players) {
+		console.log(`CHECKING ${p1.neighbors.length} neighbors of ${p1.id}`);
+		var newNeighbors = [];
+		for (var neigh of p1.neighbors) {
+			console.log(`${p1.id} is neighbors with ${neigh.id} with ports ${neigh.port} --- ${neigh.other}`);
+			var p2 = getWorldPlayerById(neigh.id);
+			if (!p2) continue;
+			if (!isNear(p1, p2, CONNECT_RADIUS)) continue;
+			var ports = getPorts(p1, p2);
+			if (ports) {
+				newNeighbors.push({id: p2.id, port: ports[0], other:ports[1]});
+				console.log(`STILL NEIGHBORS! ${p1.id} is neighbors with ${p2.id} with ports ${ports[0]} --- ${ports[1]}`);
+			}
+		}
+		p1.neighbors = newNeighbors;
+		console.log(`DONE CHECKING ${p1.neighbors.length} neighbors of ${p1.id}`);
+	}
+	// Check ports
+	for (var i = 0; i < theWorld.players.length - 1; i++) {
+		for (var j = i + 1; j < theWorld.players.length; j++) {
+			var p1 = theWorld.players[i];
+			var p2 = theWorld.players[j]; 
+			console.log(`(${p1.x}, ${p1.y}) (${p2.x}, ${p2.y}) - NEIGHBOR? ${isNeighbor(p1, p2)}`)
+			if (isNeighbor(p1, p2)) continue;
+			console.log("NOT NEIGHBOR YET!");
+			console.log(`${isNear(p1, p2, CONNECT_RADIUS)}`);
+			if (!isNear(p1, p2, CONNECT_RADIUS)) continue;
+			console.log("IS NEAR!");
+			var ports = getPorts(p1, p2);
+			if (ports) {
+				console.log("GOT PORTS!");
+				p1.neighbors.push({id: p2.id, port: ports[0], other: ports[1]});
+				p2.neighbors.push({id: p1.id, port: ports[1], other: ports[0]});
+			}
+		}
+	}
+	for (var player of theWorld.players) {
+		updateActivePort(player)
+	}
+}
+
+function updateActivePort(player) {
+	for (var i = 0; i < 4; i++) {
+		if (player.ports[i] === PORT.ACTIVE || player.ports[i] === PORT.OPEN) {
+			console.log(`PORT ${i} is ${player.ports[i]}, checking!`);
+			for (var neigh of player.neighbors) {
+				console.log(`FOUND NEIGHBOR ${neigh.id} ${neigh.port} ${neigh.other}`);
+				if (neigh.port !== i) continue;
+				var p2 = getWorldPlayerById(neigh.id);
+				if (!p2) continue;
+				if (p2.ports[neigh.other] === PORT.ACTIVE || p2.ports[neigh.other] === PORT.OPEN) {
+					player.ports[i] = PORT.ACTIVE;
+					return;
+				}
+			}
+			player.ports[i] = PORT.OPEN;
+			return;
+		}
+	}
+}
+
+function getWorldPlayerById(id) {
+	for (var p of theWorld.players) {
+		if (p.id === id) {
+			return p;
+		}
+	}
+	return false;
+}
+
+function isNear(obj1, obj2, dist) {
+	return Math.abs(obj1.x - obj2.x) <= dist && Math.abs(obj1.y - obj2.y) <= dist && Math.sqrt(Math.pow(obj1.x - obj2.x, 2) + Math.pow(obj1.y - obj2.y, 2)) <= dist;
+}
+
+function isNeighbor(p1, p2) {
+	for (var neighbor of p1.neighbors) {
+		if (neighbor.id === p2.id) return true;
+	}
+	return false;
+}
+
+function getPorts(p1, p2) {
+	var centerAngle = getAngle(p2.x - p1.x, p2.y - p1.y);
+	var bearingAngle = Math.abs(bearingDiff(p1.bearing, p2.bearing));
+	var portAngle = mod(centerAngle - p1.bearing, 360);
+	console.log(`P1: (${p1.x}, ${p1.y})   P2: (${p2.x}, ${p2.y})   ${centerAngle}`);
+	var p1Port = Math.floor((portAngle + 45) % 360 / 90);
+	if (p1.ports[p1Port] === PORT.ATTACHED) return false;
+	// TODO: disallow front/back connection when there is too much overlap
+	if (bearingAngle < 45) {
+		var p2Port = (p1Port + 2) % 4;
+	} else if (bearingAngle > 135 && p1Port !== 0) {
+		var p2Port = p1Port;
+	} else {
+		return false;
+	}
+	if (p2.ports[p2Port] === PORT.ATTACHED) return false;
+	return [p1Port, p2Port];
+}
+
 
 function updateBullet(bullet, frames) {
 	updatePosition(bullet, frames);
@@ -255,13 +367,16 @@ function tick() {
 		// console.log(`\tWORLD TIME AT ${index} (of ${worlds.length}): ${worlds[index].t}`);
 		index++;
 	}
-	if (index > 0 && worlds.length > 1) {
-		console.log(`NEW WORLD!!!! ${index} ${worlds.length}`);
+	index = Math.min(index, worlds.length - 1);
+	if (index > 0) {
+		// console.log(`NEW WORLD!!!! ${index} ${worlds.length}`);
 		theWorld = worlds[index];
 		remoteTickTime = theWorld.t;
 		tickTime = theWorld.t;
 		worlds.splice(0, index);
 	}
+
+	if (!theWorld) return;
 	// console.log(`END OF SEARCH: ${index} ${worlds.length}`);
 	// console.log(`UPDATING FROM WORLD AT ${theWorld.t}: ${worlds.length}`);
 
@@ -273,9 +388,12 @@ function tick() {
 		updateBullets(1);
 		remoteTickTime += 30;
 	}
+
+	if (!thePlayer) return;
+	
 	// console.log(`${playerId} ${thePlayer} ${thePlayer ? thePlayer.id : 0}`);
 	// Update player with local messages
-	console.log(`!!!!!!!!!!!!!!!!!! NEW CALCULATION OF PLAYER STARTING FROM ${tickTime - theWorld.startTime} -> ${newTime - theWorld.startTime} !!!!!!!!!!!!!!!!!!!!!!!!!!!!`);
+	// console.log(`!!!!!!!!!!!!!!!!!! NEW CALCULATION OF PLAYER STARTING FROM ${tickTime - theWorld.startTime} -> ${newTime - theWorld.startTime} !!!!!!!!!!!!!!!!!!!!!!!!!!!!`);
 	while (tickTime < newTime) {
 		processMessages(tickTime);
 		// console.log(`tick ${tickTime} -> ${tickTime + 30} ... ${worlds.length} ${thePlayer}`)
@@ -284,8 +402,8 @@ function tick() {
 	}
 
 	// Do stuff that depends on player frame.
-	drawGrid();
-	shoot();
+	if (thePlayer) drawGrid();
+	// shoot();
 
 	// Always draw the player on top.
 	drawPlayers();
@@ -345,6 +463,13 @@ function inView(obj) {
 	)
 }
 
+const PORT = {
+	CLOSED: "CLOSED",
+	OPEN: "OPEN",
+	ACTIVE: "ACTIVE",
+	ATTACHED: "ATTACHED",	
+};
+
 function drawShip(ship) {
 	if (!inView(ship)) { return; }
 	ctx.save();
@@ -357,8 +482,47 @@ function drawShip(ship) {
 	ctx.lineTo(-ship.length / 2, ship.width / 2);
 	ctx.lineTo(ship.length / 2, 0);
 	ctx.fill();
-	drawText(0, 0, 15, `(${ship.x}, ${ship.y}`);
+	if (theWorld.DEBUG) drawText(0.02, 0.05, 15, `${ship.id.slice(0, 5)} (${ship.x}, ${ship.y})`);
+	// console.log(`${ship.ports[0]} ${ship.ports[1]} ${ship.ports[2]} ${ship.ports[3]} `)
+	drawPort(ship.ports[0], ship.length / 2, 0);
+	drawPort(ship.ports[1], 0, ship.width / 4);
+	drawPort(ship.ports[2], -ship.length / 2, 0);
+	drawPort(ship.ports[3], 0, -ship.width / 4);
 	ctx.restore();
+}
+
+function drawCircle(color, x, y, r) {
+	ctx.fillStyle = color;
+	ctx.lineWidth = 0.01;
+	ctx.beginPath();
+	ctx.arc(x, y, r, 0, 2 * Math.PI, false);
+	ctx.fill();
+	ctx.stroke();
+}
+
+var CLOSED_PORT_COLOR = "#CCCCCC";
+var OPEN_PORT_COLOR = "#00FF00";
+var ACTIVE_PORT_COLOR = "red";
+var ATTACHED_PORT_COLOR = "#0066FF";
+
+function drawPort(portType, x, y) {
+	// TODO: draw ports differently, instead of just differnet color.
+	switch (portType) {
+		case PORT.ACTIVE:
+			drawCircle(ACTIVE_PORT_COLOR, x, y, 3);
+			break;
+		case PORT.ATTACHED:
+			drawCircle(ATTACHED_PORT_COLOR, x, y, 3);
+			break;
+		case PORT.OPEN:
+			drawCircle(OPEN_PORT_COLOR, x, y, 3);
+			break;
+		case PORT.CLOSED:
+			drawCircle(CLOSED_PORT_COLOR, x, y, 3);
+			break;
+		default:
+			break;
+	}
 }
 
 function drawPlayers() {
